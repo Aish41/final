@@ -1,0 +1,191 @@
+---
+- name: Install and Configure WordPress with Nginx on Ubuntu
+  hosts: all
+  ignore_errors: yes
+  vars:
+    mysql_root_password: "redhat"
+    db_name: "wordpress"
+    db_user: "wpuser"
+    db_password: "redhat"
+    login_password: "{{ mysql_root_password }}"
+    domain_name: "aish.deverkonda.shop"
+    sftp_user: "wp_sftp"
+    sftp_password: "redhat"
+    sftp_directory: "/var/www/wordpress"
+
+  tasks:
+    # Step 1: Update System
+    - name: Update and Upgrade Apt Packages
+      apt:
+        update_cache: yes
+        upgrade: yes
+
+    # Step 2: Install Required Packages
+    - name: Install Nginx, MariaDB, PHP, and Dependencies
+      apt:
+        name:
+          - nginx
+          - mariadb-server
+          - php-fpm
+          - php-mysql
+          - php-curl
+          - php-gd
+          - php-mbstring
+          - php-cli
+          - php-xml
+          - php-zip
+          - unzip
+          - curl
+          - wget
+          - letsencrypt
+          - python3-pymysql
+          - python3-certbot-nginx
+          - phpmyadmin
+          - openssh-server  # Required for SFTP
+        state: present
+
+    # Step 3: Start and Enable Services
+    - name: Start and Enable Nginx, MariaDB, and SSH
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - nginx
+        - mariadb
+        - php8.3-fpm
+        - ssh  # Ensure SSH remains accessible
+
+    # Step 4: Secure MySQL and Create Database
+    - name: Set MySQL root password
+      mysql_user:
+        name: root
+        password: "{{ mysql_root_password }}"
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        login_host: localhost
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        state: present
+
+    - name: Create WordPress Database
+      mysql_db:
+        name: "{{ db_name }}"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Create WordPress User
+      mysql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_password }}"
+        priv: "{{ db_name }}.*:ALL"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        login_host: localhost
+
+    # Step 5: Download and Configure WordPress
+    - name: Download WordPress
+      get_url:
+        url: https://wordpress.org/latest.tar.gz
+        dest: /tmp/wordpress.tar.gz
+
+    - name: Extract WordPress
+      unarchive:
+        src: /tmp/wordpress.tar.gz
+        dest: /var/www/
+        remote_src: yes
+
+    - name: Set Correct Permissions
+      file:
+        path: /var/www/wordpress
+        owner: www-data
+        group: www-data
+        mode: "0755"
+        recurse: yes
+
+    - name: Configure WordPress
+      template:
+        src: wp-config.php.j2
+        dest: /var/www/wordpress/wp-config.php
+
+    - name: Set Correct Permissions for wp-config.php
+      file:
+        path: /var/www/wordpress/wp-config.php
+        owner: www-data
+        group: www-data
+        mode: "0644"
+
+    # Step 6: Configure Nginx for WordPress and phpMyAdmin
+    - name: Copy Merged Nginx Configuration
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/sites-available/wordpress
+
+    - name: Enable Nginx Configuration
+      file:
+        src: /etc/nginx/sites-available/wordpress
+        dest: /etc/nginx/sites-enabled/wordpress
+        state: link
+
+    - name: Remove Default Nginx Configuration
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Restart Nginx
+      systemd:
+        name: nginx
+        state: restarted
+
+    # Step 7: Secure with Let's Encrypt (Optional)
+    - name: Install Certbot
+      apt:
+        name: certbot
+        state: present
+
+    - name: Obtain SSL Certificate
+      command: certbot --nginx -d "{{ domain_name }}" --non-interactive --agree-tos --email admin@{{ domain_name }}
+      notify: Restart Nginx
+
+    # Step 8: Install and Configure phpMyAdmin
+    - name: Install phpMyAdmin
+      apt:
+        name: phpmyadmin
+        state: present
+
+    - name: Create phpMyAdmin symbolic link
+      file:
+        src: /usr/share/phpmyadmin
+        dest: /var/www/phpmyadmin
+        state: link
+
+    - name: Ensure phpMyAdmin directory permissions are correct
+      file:
+        path: /usr/share/phpmyadmin
+        owner: www-data
+        group: www-data
+        mode: "0755"
+        recurse: yes
+
+    - name: Create a restricted MySQL user for phpMyAdmin
+      mysql_user:
+        name: "pma_user"
+        password: "redhat"
+        priv: "wordpress.*:SELECT,INSERT,UPDATE,DELETE"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+  handlers:
+    - name: Restart Nginx
+      systemd:
+        name: nginx
+        state: restarted
+
+    - name: Restart SSH
+      systemd:
+        name: ssh
+        state: restarted
+
